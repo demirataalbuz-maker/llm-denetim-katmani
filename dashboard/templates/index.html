@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>LLM Denetim Katmanı — Panel</title>
+  <style>
+    :root {
+      --zemin: #0f1115;
+      --kart: #171a21;
+      --cizgi: #262b36;
+      --metin: #e6e9ef;
+      --soluk: #9aa3b2;
+      --izin: #3fb950;
+      --uyari: #d29922;
+      --engel: #f85149;
+      --hata: #a371f7;
+      --vurgu: #58a6ff;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; background: var(--zemin); color: var(--metin);
+      font: 14px/1.5 "Segoe UI", system-ui, -apple-system, sans-serif;
+    }
+    header {
+      padding: 18px 24px; border-bottom: 1px solid var(--cizgi);
+      display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap;
+    }
+    header h1 { font-size: 17px; margin: 0; font-weight: 600; }
+    header .alt { color: var(--soluk); font-size: 12px; }
+    header .durum { margin-left: auto; color: var(--soluk); font-size: 12px; }
+    .nokta {
+      display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+      background: var(--izin); margin-right: 6px; vertical-align: middle;
+    }
+    main { padding: 20px 24px 40px; max-width: 1280px; }
+    .kartlar {
+      display: grid; gap: 12px; margin-bottom: 20px;
+      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    }
+    .kart {
+      background: var(--kart); border: 1px solid var(--cizgi);
+      border-radius: 8px; padding: 14px 16px;
+    }
+    .kart .etiket {
+      color: var(--soluk); font-size: 11px; text-transform: uppercase;
+      letter-spacing: .06em;
+    }
+    .kart .deger { font-size: 26px; font-weight: 600; margin-top: 4px; }
+    .kart.engel .deger { color: var(--engel); }
+    .kart.uyari .deger { color: var(--uyari); }
+    .kart.maske .deger { color: var(--vurgu); }
+    .satir-basligi {
+      display: flex; align-items: center; gap: 12px; margin: 24px 0 10px;
+    }
+    h2 { font-size: 14px; margin: 0; font-weight: 600; }
+    .dagilim { display: flex; flex-wrap: wrap; gap: 6px; }
+    .rozet {
+      background: #1d2430; border: 1px solid var(--cizgi); color: var(--soluk);
+      border-radius: 999px; padding: 2px 10px; font-size: 12px;
+    }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td {
+      text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--cizgi);
+      vertical-align: top;
+    }
+    th { color: var(--soluk); font-weight: 500; font-size: 11px;
+         text-transform: uppercase; letter-spacing: .05em; }
+    tbody tr:hover { background: #141821; }
+    .karar {
+      font-weight: 600; font-size: 12px; text-transform: uppercase;
+      letter-spacing: .04em;
+    }
+    .karar.izin  { color: var(--izin); }
+    .karar.uyari { color: var(--uyari); }
+    .karar.engel { color: var(--engel); }
+    .karar.hata  { color: var(--hata); }
+    .onizleme {
+      color: var(--soluk); max-width: 460px; overflow-wrap: anywhere;
+      font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+      font-size: 12px;
+    }
+    .kucuk { color: var(--soluk); font-size: 12px; }
+    select, button {
+      background: var(--kart); color: var(--metin); border: 1px solid var(--cizgi);
+      border-radius: 6px; padding: 5px 10px; font-size: 12px; cursor: pointer;
+    }
+    footer {
+      padding: 16px 24px; border-top: 1px solid var(--cizgi);
+      color: var(--soluk); font-size: 11px; max-width: 1280px;
+    }
+    .bos { color: var(--soluk); padding: 24px 10px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>LLM Denetim Katmanı</h1>
+    <span class="alt">giriş filtreleme &amp; kişisel veri maskeleme — v0.1</span>
+    <span class="durum"><span class="nokta" id="nokta"></span><span id="durumMetni">canlı</span></span>
+  </header>
+
+  <main>
+    <div class="kartlar" id="kartlar"></div>
+
+    <div class="satir-basligi">
+      <h2>Maskelenen veri türleri</h2>
+      <span class="kucuk" id="turBos"></span>
+    </div>
+    <div class="dagilim" id="turDagilimi"></div>
+
+    <div class="satir-basligi">
+      <h2>Canlı olay akışı</h2>
+      <select id="suzgec">
+        <option value="">tüm kararlar</option>
+        <option value="engel">yalnızca engellenen</option>
+        <option value="uyari">yalnızca uyarı</option>
+        <option value="izin">yalnızca izin</option>
+        <option value="hata">yalnızca hata</option>
+      </select>
+      <button id="duraklat">duraklat</button>
+      <span class="kucuk" id="sonGuncelleme"></span>
+    </div>
+
+    <table>
+      <thead>
+        <tr>
+          <th style="width:78px">zaman</th>
+          <th style="width:70px">karar</th>
+          <th style="width:58px">puan</th>
+          <th>giriş (maskelenmiş)</th>
+          <th style="width:170px">tetiklenen kural</th>
+          <th style="width:110px">maskelenen</th>
+          <th style="width:70px">süre</th>
+        </tr>
+      </thead>
+      <tbody id="govde"></tbody>
+    </table>
+  </main>
+
+  <footer>
+    Bu panel yalnızca maskelenmiş denetim kaydını gösterir; ham kişisel veri
+    hiçbir aşamada veritabanına yazılmaz. Araç, yalnızca kendi sistemlerinizde
+    denetim amaçlı kullanım içindir; KVKK (6698) uyumu kullanıcının
+    sorumluluğundadır.
+  </footer>
+
+  <script>
+    // İlk boyama için sunucudan gelen veri; sonrası /panel/api/ozet ile tazelenir.
+    let VERI = {
+      ozet: {{ ozet | tojson }},
+      olaylar: {{ olaylar | tojson }}
+    };
+    let duraklatildi = false;
+
+    const el = (id) => document.getElementById(id);
+    const kacir = (s) => String(s == null ? "" : s)
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+    function saat(isoMetni) {
+      if (!isoMetni) return "-";
+      const t = new Date(isoMetni);
+      return isNaN(t) ? isoMetni : t.toLocaleTimeString("tr-TR");
+    }
+
+    function kartlariCiz(ozet) {
+      const tanim = [
+        ["toplam istek", ozet.toplam_istek, ""],
+        ["engellenen istek", ozet.engellenen, "engel"],
+        ["uyarı", ozet.uyari, "uyari"],
+        ["maskelenen veri", ozet.maskelenen_veri, "maske"],
+        ["son " + ozet.son_pencere_saat + " saat", ozet.son_pencere_istek, ""],
+        ["ort. gecikme (ms)", ozet.ortalama_gecikme_ms, ""]
+      ];
+      el("kartlar").innerHTML = tanim.map(function (k) {
+        return '<div class="kart ' + k[2] + '">' +
+               '<div class="etiket">' + kacir(k[0]) + '</div>' +
+               '<div class="deger">' + kacir(k[1]) + '</div></div>';
+      }).join("");
+    }
+
+    function turleriCiz(dagilim) {
+      const anahtarlar = Object.keys(dagilim || {});
+      el("turBos").textContent = anahtarlar.length ? "" : "henüz maskelenen veri yok";
+      el("turDagilimi").innerHTML = anahtarlar.map(function (tur) {
+        return '<span class="rozet">' + kacir(tur) + ' · ' + kacir(dagilim[tur]) + '</span>';
+      }).join("");
+    }
+
+    function kurallariOzetle(ihlaller) {
+      if (!ihlaller || !ihlaller.length) return '<span class="kucuk">—</span>';
+      const adlar = ihlaller.map(function (i) { return i.kural; });
+      const ilk = adlar.slice(0, 2).join(", ");
+      const kalan = adlar.length > 2 ? " +" + (adlar.length - 2) : "";
+      return '<span class="kucuk">' + kacir(ilk + kalan) + '</span>';
+    }
+
+    function maskelemeOzeti(olay) {
+      if (!olay.maskelenen_adet) return '<span class="kucuk">—</span>';
+      const d = olay.bulgular || {};
+      const turler = Object.keys(d).map(function (t) { return t + "×" + d[t]; }).join(" ");
+      return '<span class="kucuk">' + kacir(turler || olay.maskelenen_adet) + '</span>';
+    }
+
+    function tabloyuCiz(olaylar) {
+      const suzgec = el("suzgec").value;
+      const liste = suzgec ? olaylar.filter(function (o) { return o.karar === suzgec; })
+                           : olaylar;
+      if (!liste.length) {
+        el("govde").innerHTML = '<tr><td colspan="7" class="bos">' +
+          'Kayıt yok. POST /chat ile ilk isteği gönderin.</td></tr>';
+        return;
+      }
+      el("govde").innerHTML = liste.map(function (o) {
+        return '<tr>' +
+          '<td class="kucuk">' + kacir(saat(o.zaman)) + '</td>' +
+          '<td><span class="karar ' + kacir(o.karar) + '">' + kacir(o.karar) + '</span></td>' +
+          '<td class="kucuk">' + kacir((o.giris_puani || 0).toFixed(2)) + '</td>' +
+          '<td class="onizleme">' + kacir(o.giris_onizleme || "") + '</td>' +
+          '<td>' + kurallariOzetle(o.ihlaller) + '</td>' +
+          '<td>' + maskelemeOzeti(o) + '</td>' +
+          '<td class="kucuk">' + kacir(o.gecikme_ms) + ' ms</td>' +
+        '</tr>';
+      }).join("");
+    }
+
+    function ciz() {
+      kartlariCiz(VERI.ozet || {});
+      turleriCiz((VERI.ozet || {}).tur_dagilimi || {});
+      tabloyuCiz(VERI.olaylar || []);
+    }
+
+    async function tazele() {
+      if (duraklatildi) return;
+      try {
+        const yanit = await fetch("/panel/api/ozet?limit=50", { cache: "no-store" });
+        if (!yanit.ok) throw new Error(yanit.status);
+        VERI = await yanit.json();
+        ciz();
+        el("sonGuncelleme").textContent =
+          "son güncelleme " + new Date().toLocaleTimeString("tr-TR");
+        el("nokta").style.background = "var(--izin)";
+        el("durumMetni").textContent = "canlı";
+      } catch (e) {
+        el("nokta").style.background = "var(--engel)";
+        el("durumMetni").textContent = "bağlantı yok";
+      }
+    }
+
+    el("suzgec").addEventListener("change", ciz);
+    el("duraklat").addEventListener("click", function () {
+      duraklatildi = !duraklatildi;
+      this.textContent = duraklatildi ? "devam et" : "duraklat";
+      el("durumMetni").textContent = duraklatildi ? "duraklatıldı" : "canlı";
+      el("nokta").style.background = duraklatildi ? "var(--uyari)" : "var(--izin)";
+    });
+
+    ciz();
+    setInterval(tazele, 3000);
+  </script>
+</body>
+</html>

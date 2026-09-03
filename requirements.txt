@@ -1,0 +1,11 @@
+# --- Çekirdek (V0.1 için zorunlu) ---
+fastapi>=0.110
+uvicorn[standard]>=0.27
+httpx>=0.27
+jinja2>=3.1
+pydantic>=2.5
+
+# --- İsteğe bağlı: model tabanlı giriş filtresi ---
+# HuggingFace sınıflandırıcı kullanmak isterseniz açın (filters/model_based.py).
+# transformers>=4.40
+# torch>=2.2
