@@ -3,9 +3,13 @@
 Model tabanlı giriş filtresi (isteğe bağlı, varsayılan KAPALI).
 
 HuggingFace prompt-injection sınıflandırıcılarını kural filtresinin yanında
-ikinci katman olarak çalıştırır. `transformers` + `torch` kurulu değilse veya
-model indirilemezse filtre sessizce devre dışı kalır (`kullanilabilir=False`)
-ve zincir yalnızca kural filtresiyle çalışmaya devam eder.
+ikinci katman olarak çalıştırır.
+
+Hata davranışı: filtre açıkken model yüklenemez veya çıkarım çökerse
+`kati=True` (varsayılan, MODEL_FILTRESI_KATI) iken istek ENGELLENİR
+(fail-closed). Aksi hâlde saldırgan modeli çökerten bir girdiyle ikinci
+katmanı sessizce devre dışı bırakabilir. `kati=False` ile eski davranışa
+(yalnızca kural filtresiyle devam) dönülebilir.
 
 Kurulum:
     pip install transformers torch
@@ -39,10 +43,12 @@ class ModelTabanliFiltre(GirisFiltresi):
         esik: float = 0.80,
         acik: bool = False,
         azami_karakter: int = 4000,
+        kati: bool = True,
     ) -> None:
         self.model_adi = model_adi
         self.esik = esik
         self.acik = acik
+        self.kati = kati
         self.azami_karakter = azami_karakter
         self._boru = None            # transformers pipeline
         self._yukleme_denendi = False
@@ -73,30 +79,44 @@ class ModelTabanliFiltre(GirisFiltresi):
 
     @property
     def kullanilabilir(self) -> bool:
-        if not self.acik:
-            return False
-        return self._boru_hattini_al() is not None
+        # Burada model YÜKLENMEZ: zincir kurulurken çağrıldığı için yükleme
+        # ilk denetime ertelenir (tembel yükleme).
+        return self.acik
+
+    def _hata_sonucu(self, neden: str) -> FiltreSonucu:
+        """Model kullanılamadığında kati moda göre ENGEL veya IZIN döner."""
+        if not self.kati:
+            return FiltreSonucu(
+                karar=Karar.IZIN, puan=0.0, aciklama=neden, filtre_adi=self.ad,
+            )
+        return FiltreSonucu(
+            karar=Karar.ENGEL,
+            puan=1.0,
+            ihlaller=[Ihlal(
+                kural="model_filtresi_kullanilamaz",
+                kategori="sistem",
+                puan=1.0,
+                aciklama="Model filtresi çalışmadı; kati mod gereği engellendi",
+                kanit=neden[:80],
+            )],
+            aciklama=neden,
+            filtre_adi=self.ad,
+        )
 
     # -- Denetim -------------------------------------------------------------
 
     def denetle(self, metin: str, baglam: Optional[dict] = None) -> FiltreSonucu:
         boru = self._boru_hattini_al()
         if boru is None:
-            return FiltreSonucu(
-                karar=Karar.IZIN,
-                puan=0.0,
-                aciklama=f"model yüklü değil ({self._hata or 'kapalı'})",
-                filtre_adi=self.ad,
+            return self._hata_sonucu(
+                f"model yüklü değil ({self._hata or 'kapalı'})"
             )
 
         try:
             cikti = boru(metin[: self.azami_karakter])
         except Exception as hata:
             kayitci.warning("Model çıkarımı başarısız: %s", hata)
-            return FiltreSonucu(
-                karar=Karar.IZIN, puan=0.0,
-                aciklama=f"çıkarım hatası: {hata}", filtre_adi=self.ad,
-            )
+            return self._hata_sonucu(f"çıkarım hatası: {hata}")
 
         # pipeline tek metin için [{"label": ..., "score": ...}] döndürür
         ilk = cikti[0] if isinstance(cikti, list) and cikti else {}

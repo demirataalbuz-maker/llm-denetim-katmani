@@ -17,10 +17,10 @@ Akış:
     uvicorn proxy:app --reload --port 8000
 
 Uç noktalar:
-    POST /chat      : denetimli sohbet
-    GET  /saglik    : sağlık kontrolü
-    GET  /kurallar  : etkin kural ve kalıp envanteri
-    GET  /panel     : izleme paneli (dashboard/)
+    POST /chat      : denetimli sohbet            (API anahtarı, ayarlıysa)
+    GET  /saglik    : sağlık kontrolü             (açık)
+    GET  /kurallar  : etkin kural ve kalıp envanteri (API anahtarı, ayarlıysa)
+    GET  /panel     : izleme paneli (dashboard/)  (HTTP Basic, ayarlıysa)
 """
 
 from __future__ import annotations
@@ -32,13 +32,14 @@ from contextlib import asynccontextmanager
 from typing import Optional
 
 import httpx
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
 from config import AYARLAR
 from dashboard.app import panel_yonlendirici
+from erisim import api_dogrula, panel_dogrula
 from filters import Karar, varsayilan_zincir
 from filters.rule_based import KURALLAR
 from logs import db
@@ -67,9 +68,18 @@ class SohbetIstegi(BaseModel):
     """POST /chat gövdesi."""
 
     mesaj: str = Field(..., min_length=1, description="Kullanıcının isteği")
-    oturum: Optional[str] = Field(None, description="Oturum/konuşma kimliği")
-    model: Optional[str] = Field(None, description="Hedef Ollama modeli")
-    sistem: Optional[str] = Field(None, description="Sistem mesajı (opsiyonel)")
+    oturum: Optional[str] = Field(None, max_length=128,
+                                  description="Oturum/konuşma kimliği")
+    model: Optional[str] = Field(
+        None, description="Hedef Ollama modeli (IZINLI_MODELLER içinde olmalı)"
+    )
+    sistem: Optional[str] = Field(
+        None,
+        description=(
+            "Sistem mesajı (opsiyonel). Kullanıcı mesajıyla birlikte giriş "
+            "denetiminden geçer."
+        ),
+    )
 
 
 class DenetimOzeti(BaseModel):
@@ -105,6 +115,14 @@ def _onizleme(metin: str) -> str:
     tek_satir = " ".join((metin or "").split())
     sinir = AYARLAR.onizleme_uzunlugu
     return tek_satir if len(tek_satir) <= sinir else tek_satir[: sinir - 1] + "…"
+
+
+def _izinli_modeller() -> set[str]:
+    return {AYARLAR.ollama_model, *AYARLAR.izinli_modeller}
+
+
+def _istek_hatasi(mesaj: str) -> JSONResponse:
+    return JSONResponse(status_code=400, content={"hata": mesaj})
 
 
 def _guvenli_onizleme(metin: str) -> str:
@@ -150,6 +168,13 @@ async def yasam_dongusu(uygulama: FastAPI):
         "Denetim katmanı hazır | hedef=%s model=%s | engel eşiği=%.2f",
         AYARLAR.ollama_url, AYARLAR.ollama_model, AYARLAR.giris_engel_esigi,
     )
+    if not AYARLAR.api_anahtari:
+        kayitci.warning(
+            "DENETIM_API_ANAHTARI boş: /chat ve /kurallar kimlik doğrulamasız. "
+            "Proxy'yi yalnızca güvenilir ağda çalıştırın."
+        )
+    if not AYARLAR.panel_sifresi:
+        kayitci.warning("PANEL_SIFRESI boş: /panel kimlik doğrulamasız.")
     try:
         yield
     finally:
@@ -166,7 +191,7 @@ app = FastAPI(
     version="0.1.0",
     lifespan=yasam_dongusu,
 )
-app.include_router(panel_yonlendirici)
+app.include_router(panel_yonlendirici, dependencies=[Depends(panel_dogrula)])
 
 
 @app.get("/", include_in_schema=False)
@@ -196,7 +221,7 @@ async def saglik(request: Request):
     }
 
 
-@app.get("/kurallar")
+@app.get("/kurallar", dependencies=[Depends(api_dogrula)])
 async def kural_envanteri():
     """Etkin kural ve veri kalıbı envanteri (şeffaflık / denetlenebilirlik)."""
     return {
@@ -218,7 +243,12 @@ async def kural_envanteri():
     }
 
 
-@app.post("/chat", response_model=SohbetYaniti, responses={403: {}, 502: {}})
+@app.post(
+    "/chat",
+    response_model=SohbetYaniti,
+    responses={400: {}, 401: {}, 403: {}, 502: {}},
+    dependencies=[Depends(api_dogrula)],
+)
 async def sohbet(istek: SohbetIstegi, request: Request):
     """Denetimli sohbet uç noktası."""
     olay_id = uuid.uuid4().hex[:12]
@@ -226,11 +256,23 @@ async def sohbet(istek: SohbetIstegi, request: Request):
     istemci_ip = request.client.host if request.client else None
     model = istek.model or AYARLAR.ollama_model
 
+    # --- [0] İstek doğrulama -----------------------------------------------
+    if model not in _izinli_modeller():
+        return _istek_hatasi(f"İzin verilmeyen model: {model}")
+    if istek.sistem and not AYARLAR.istemci_sistem_mesaji:
+        return _istek_hatasi("Bu kurulumda istemci sistem mesajı kabul edilmiyor")
+
     # --- [1] Giriş denetimi ------------------------------------------------
-    giris_sonuc = GIRIS_ZINCIRI.denetle(istek.mesaj, {"oturum": istek.oturum})
+    # `sistem` alanı da istemciden geldiği için güvenilmezdir; denetlenmezse
+    # saldırgan yükü oraya koyarak filtreyi tamamen atlayabilir. İki alan
+    # birlikte denetlenir (alanlara bölünmüş saldırılar da yakalanır).
+    denetlenecek = (
+        f"{istek.sistem}\n{istek.mesaj}" if istek.sistem else istek.mesaj
+    )
+    giris_sonuc = GIRIS_ZINCIRI.denetle(denetlenecek, {"oturum": istek.oturum})
     giris_ozeti = giris_sonuc.ozet()
     giris_ozeti["ihlaller"] = _ihlalleri_maskele(giris_ozeti["ihlaller"])
-    giris_onizleme = _guvenli_onizleme(istek.mesaj)
+    giris_onizleme = _guvenli_onizleme(denetlenecek)
 
     if giris_sonuc.karar is Karar.ENGEL:
         gecikme = int((time.perf_counter() - baslangic) * 1000)
@@ -264,12 +306,15 @@ async def sohbet(istek: SohbetIstegi, request: Request):
     # --- [2] Girişi maskeleme (opsiyonel) ----------------------------------
     # KVKK açısından en güvenli mod: kişisel veri modele hiç ulaşmasın.
     gonderilecek = istek.mesaj
+    sistem = istek.sistem
     if AYARLAR.giris_maskeleme_acik:
         gonderilecek = CIKIS_TARAYICI.maskele(istek.mesaj).temiz_metin
+        if sistem:
+            sistem = CIKIS_TARAYICI.maskele(sistem).temiz_metin
 
     mesajlar: list[dict] = []
-    if istek.sistem:
-        mesajlar.append({"role": "system", "content": istek.sistem})
+    if sistem:
+        mesajlar.append({"role": "system", "content": sistem})
     mesajlar.append({"role": "user", "content": gonderilecek})
 
     # --- [3] LLM çağrısı ---------------------------------------------------
