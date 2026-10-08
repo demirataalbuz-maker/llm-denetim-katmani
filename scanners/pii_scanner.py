@@ -3,7 +3,10 @@
 Kişisel veri tarayıcısı (çıkış denetimi).
 
 Akış:
-  1. Etkin her kalıbın regexi metin üzerinde çalıştırılır.
+  1. Metnin görünümleri üretilir (dönüşümsüz, NFKC, ayraçsız, yazıyla
+     rakamlar -> rakam; bkz. scanners/normalizasyon.py) ve etkin her kalıbın
+     regexi her görünümde çalıştırılır. Eşleşmeler orijinal metne geri
+     eşlenir; böylece "100 000 000 78" gibi biçim oyunları da yakalanır.
   2. Eşleşme, kalıbın algoritmik doğrulayıcısından geçirilir (TCKN mod-10,
      IBAN mod-97, kart için Luhn). Geçmeyen eşleşme atılır -> yanlış pozitif
      azalır.
@@ -21,8 +24,18 @@ from __future__ import annotations
 
 from typing import Iterable, Optional, Sequence
 
+import re
+
 from scanners.base import Bulgu, CikisTarayici, TaramaSonucu
-from scanners.patterns import KALIPLAR, VeriKalibi
+from scanners.normalizasyon import gorunumler
+from scanners.patterns import KALIPLAR, VeriKalibi, maskele_tam
+
+_ALNUM_DISI = re.compile(r"[\W_]+")
+
+
+def _cekirdek(deger: str) -> str:
+    """Ayraçlardan arındırılmış, büyük harfli karşılaştırma anahtarı."""
+    return _ALNUM_DISI.sub("", deger).upper()
 
 
 class PIITarayici(CikisTarayici):
@@ -60,22 +73,40 @@ class PIITarayici(CikisTarayici):
             return []
 
         adaylar: list[tuple[int, Bulgu]] = []  # (oncelik, bulgu)
-        for kalip in self.kaliplar:
-            for eslesme in kalip.regex.finditer(metin):
-                deger = eslesme.group(0)
-                if not kalip.gecerli_mi(deger):
-                    continue
-                adaylar.append((
-                    kalip.oncelik,
-                    Bulgu(
-                        tur=kalip.ad,
-                        baslangic=eslesme.start(),
-                        bitis=eslesme.end(),
-                        ham_deger=deger,
-                        maskeli_deger=kalip.maskele(deger),
-                        duyarlilik=kalip.duyarlilik,
-                    ),
-                ))
+        gorulen: set[tuple[str, int, int]] = set()
+        for gorunum in gorunumler(metin):
+            for kalip in self.kaliplar:
+                for eslesme in kalip.regex.finditer(gorunum.metin):
+                    deger = eslesme.group(0)
+                    if not kalip.gecerli_mi(deger):
+                        continue
+                    bas, bit = gorunum.orijinal_aralik(
+                        eslesme.start(), eslesme.end()
+                    )
+                    if (kalip.ad, bas, bit) in gorulen:
+                        continue
+                    gorulen.add((kalip.ad, bas, bit))
+
+                    ham = metin[bas:bit]
+                    # Yalnızca ayraçlar farklıysa (100 000 000 78) kısmi maske
+                    # ayraçları koruyarak uygulanabilir; karakterler de
+                    # dönüştüyse (tam genişlik, yazıyla rakam) tamamen etiketle.
+                    if _cekirdek(ham) == _cekirdek(deger):
+                        maskeli = kalip.maskele(ham)
+                    else:
+                        maskeli = maskele_tam(ham, tur=kalip.ad)
+
+                    adaylar.append((
+                        kalip.oncelik,
+                        Bulgu(
+                            tur=kalip.ad,
+                            baslangic=bas,
+                            bitis=bit,
+                            ham_deger=ham,
+                            maskeli_deger=maskeli,
+                            duyarlilik=kalip.duyarlilik,
+                        ),
+                    ))
 
         return self._cakismalari_coz(adaylar)
 

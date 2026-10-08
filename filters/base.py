@@ -96,13 +96,22 @@ class FiltreZinciri(GirisFiltresi):
 
     `erken_cikis=True` iken ilk ENGEL kararında durur; bu, pahalı model tabanlı
     filtreyi ucuz kural filtresi zaten engellediğinde çalıştırmamayı sağlar.
+
+    `hatada_engelle=True` iken istisna fırlatan bir filtre isteği ENGELLER
+    (fail-closed); denetlenemeyen istek LLM'e gitmez.
     """
 
     ad = "zincir"
 
-    def __init__(self, filtreler: list[GirisFiltresi], erken_cikis: bool = True):
+    def __init__(
+        self,
+        filtreler: list[GirisFiltresi],
+        erken_cikis: bool = True,
+        hatada_engelle: bool = True,
+    ):
         self.filtreler = [f for f in filtreler if f.kullanilabilir]
         self.erken_cikis = erken_cikis
+        self.hatada_engelle = hatada_engelle
 
     def denetle(self, metin: str, baglam: Optional[dict] = None) -> FiltreSonucu:
         toplu_ihlaller: list[Ihlal] = []
@@ -114,14 +123,23 @@ class FiltreZinciri(GirisFiltresi):
         for filtre in self.filtreler:
             try:
                 sonuc = filtre.denetle(metin, baglam)
-            except Exception as hata:  # bir filtre çökerse zincir durmasın
-                toplu_ihlaller.append(Ihlal(
-                    kural="filtre_hatasi",
-                    kategori="sistem",
-                    puan=0.0,
-                    aciklama=f"{filtre.ad}: {hata}",
-                ))
-                continue
+            except Exception as hata:
+                if not self.hatada_engelle:  # eski davranış: zincir devam etsin
+                    toplu_ihlaller.append(Ihlal(
+                        kural="filtre_hatasi", kategori="sistem", puan=0.0,
+                        aciklama=f"{filtre.ad}: {hata}",
+                    ))
+                    continue
+                sonuc = FiltreSonucu(
+                    karar=Karar.ENGEL,
+                    puan=1.0,
+                    ihlaller=[Ihlal(
+                        kural="filtre_hatasi", kategori="sistem", puan=1.0,
+                        aciklama=f"{filtre.ad} çöktü; istek engellendi",
+                        kanit=hata.__class__.__name__,
+                    )],
+                    filtre_adi=filtre.ad,
+                )
 
             toplu_ihlaller.extend(sonuc.ihlaller)
             en_yuksek_puan = max(en_yuksek_puan, sonuc.puan)

@@ -50,6 +50,7 @@ def varsayilan_zincir() -> FiltreZinciri:
                 model_adi=AYARLAR.hf_model_adi,
                 esik=AYARLAR.hf_model_esigi,
                 acik=True,
+                kati=AYARLAR.model_filtresi_kati,
             )
         )
 

@@ -232,6 +232,21 @@ KALIPLAR: list[VeriKalibi] = [
         oncelik=60,
     ),
     VeriKalibi(
+        ad="EPOSTA_GIZLENMIS",
+        aciklama="Gizlenmiş e-posta (ali [at] ornek [dot] com, ali @ ornek.com)",
+        regex=re.compile(
+            r"(?<![\w.+-])[A-Za-z0-9._%+\-]+\s*"
+            r"(?:[\[({<]\s*(?:at|et)\s*[\])}>]|\s@\s?|@\s)\s*"
+            r"[A-Za-z0-9\-]+"
+            r"(?:\s*(?:\.|[\[({<]\s*(?:dot|nokta)\s*[\])}>])\s*[A-Za-z0-9\-]+)*"
+            r"\s*(?:\.|[\[({<]\s*(?:dot|nokta)\s*[\])}>])\s*[A-Za-z]{2,}(?![\w.])",
+            re.IGNORECASE,
+        ),
+        strateji="tam",
+        duyarlilik="orta",
+        oncelik=55,
+    ),
+    VeriKalibi(
         ad="ADRES_IPUCU",
         aciklama="Türkçe açık adres kalıbı (Mah./Cad./Sok. + No)",
         regex=re.compile(

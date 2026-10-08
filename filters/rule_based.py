@@ -16,14 +16,20 @@ Puanlama: her kural bir ağırlık ekler, toplam 1.0 ile sınırlanır.
   puan >= uyari_esigi  -> UYARI
   aksi                 -> IZIN
 
-Türkçe metinler eşleştirmeden önce ASCII'ye katlanır (ı->i, ş->s ...). Katlama
-karakter bazlı ve 1:1 olduğu için eşleşme indeksleri orijinal metinle aynı
-kalır; kanıt parçası orijinal metinden kesilir.
+Kurallar metnin iki görünümünde çalışır:
+  1. `normalize()`  — Türkçe karakterler ASCII'ye katlanır (ı->i, ş->s ...).
+     Katlama 1:1 olduğu için eşleşme indeksleri orijinal metinle aynı kalır;
+     kanıt parçası orijinal metinden kesilir.
+  2. `derin_normalize()` — atlatma tekniklerini geri alır: NFKC, görünmez
+     karakter silme, Kiril/Yunan homoglifleri, leetspeak (0nceki, 1gn0re) ve
+     harf aralarına konan boşluk/nokta (Ö n c e k i, i.g.n.o.r.e). Yalnızca
+     bu görünümde eşleşen kuralın kanıtı derin metinden alınır.
 """
 
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import dataclass
 from typing import Optional, Pattern
 
@@ -62,6 +68,39 @@ def normalize(metin: str) -> str:
     return metin.translate(_KATLAMA).lower()
 
 
+# Latin harfe benzeyen Kiril / Yunan harfleri (küçük harf sonrası).
+_HOMOGLIF = str.maketrans({
+    "а": "a", "в": "b", "е": "e", "ё": "e", "к": "k", "м": "m", "н": "h",
+    "о": "o", "р": "p", "с": "c", "т": "t", "у": "y", "х": "x", "і": "i",
+    "ї": "i", "ј": "j", "ѕ": "s", "ԁ": "d", "ɡ": "g", "һ": "h", "ԛ": "q",
+    "ԝ": "w", "α": "a", "β": "b", "ε": "e", "ι": "i", "κ": "k", "ν": "v",
+    "ο": "o", "ρ": "p", "τ": "t", "υ": "u", "χ": "x",
+})
+_LEET = {"0": "o", "1": "i", "3": "e", "4": "a", "5": "s", "7": "t",
+         "@": "a", "$": "s"}
+# Yalnızca harfe bitişik leet karakterleri çevrilir; saf rakam dizileri
+# (TCKN, sipariş no) dokunulmadan kalır.
+_LEET_KARAKTER = re.compile(
+    r"(?<=[a-z])[013457@$]|[013457@$](?=[a-z])"
+)
+# "o n c e k i", "i.g.n.o.r.e", "u-n-u-t" gibi tek harf dizileri.
+_ARALIKLI_HARFLER = re.compile(r"(?<!\w)(?:\w[ .\-_*+]{1,2}){2,}\w(?!\w)")
+
+
+def derin_normalize(metin: str) -> str:
+    """Atlatma tekniklerini geri alan, indeksleri KORUMAYAN normalizasyon."""
+    s = unicodedata.normalize("NFKC", metin)
+    s = GORUNMEZ_KARAKTERLER.sub("", s)
+    s = normalize(s).translate(_HOMOGLIF)
+    s = "".join(c for c in unicodedata.normalize("NFD", s)
+                if not unicodedata.combining(c))
+    s = _LEET_KARAKTER.sub(lambda m: _LEET[m.group(0)], s)
+    s = _ARALIKLI_HARFLER.sub(
+        lambda m: re.sub(r"[ .\-_*+]", "", m.group(0)), s
+    )
+    return re.sub(r"\s+", " ", s)
+
+
 # ---------------------------------------------------------------------------
 # Kural tanımı
 # ---------------------------------------------------------------------------
@@ -85,12 +124,19 @@ KURALLAR: list[Kural] = [
         ad="talimat_gecersiz_kilma",
         kategori="prompt_injection",
         regex=re.compile(
-            r"(onceki|yukaridaki|butun|tum|bundan onceki|ilk)\s+"
-            r"(talimat|yonerge|kural|komut|mesaj)\w*\s*"
-            r"(unut|yok say|gormezden gel|dikkate alma|iptal et|sil)"
-            r"|ignore\s+(all\s+|any\s+)?(previous|prior|above|earlier)\s+"
-            r"(instruction|prompt|rule|direction)s?"
-            r"|disregard\s+(the\s+)?(previous|above|prior)"
+            # "önceki / sana verilen / yukarıda verilen ... talimatları ... unut"
+            r"(onceki|yukarida\w*|butun|tum|ilk|sana\s+verilen|verilen|mevcut)"
+            r"\s+(\w+\s+){0,2}"
+            r"(talimat|yonerge|kural|komut|mesaj|sinirlama|kisitlama)\w*\s+"
+            r"(\w+\s+){0,2}"
+            r"(unut(?!ma)|yok say|gormezden gel|dikkate alma|iptal et|sil\b"
+            r"|onemseme|bir kenara birak|uyma\b|cigne|gecersiz)"
+            r"|ignore\s+(\w+\s+){0,4}(previous|prior|above|earlier|preceding|initial)"
+            r"\s+(\w+\s+){0,2}(instruction|prompt|rule|direction|guideline)s?"
+            r"|disregard\s+(\w+\s+){0,3}(previous|above|prior|earlier|instruction|rule)"
+            r"|forget\s+(everything|all|any|what)\s+(\w+\s+){0,5}"
+            r"(told|said|instruct|above|before|previous|earlier)"
+            r"|(override|bypass)\s+(\w+\s+){0,2}(instruction|system prompt|rule)s?"
         ),
         puan=0.80,
         aciklama="Sistem talimatlarını geçersiz kılma girişimi",
@@ -101,8 +147,9 @@ KURALLAR: list[Kural] = [
         regex=re.compile(
             r"(sistem|system)\s*(prompt|mesaj|talimat|yonerge)\w*\s*"
             r"(nedir|ne|goster|yaz|payla|soyle|aktar|kopyala)"
-            r"|(baslangic|ilk|gizli)\s+(talimat|yonerge|prompt)\w*\s*"
-            r"(nedir|goster|yaz|payla|soyle)"
+            r"|(baslangic|gizli|senin|sana verilen|orijinal)\s+"
+            r"(talimat|yonerge|prompt)\w*\s*(\w+\s*){0,2}?"
+            r"(nedir|neydi|goster|yaz|payla|soyle|aktar|tekrarla|kopyala|listele)"
             r"|(reveal|show|print|repeat|output)\s+(your\s+|the\s+)?"
             r"(system\s+)?(prompt|instructions|rules)"
             r"|repeat\s+everything\s+above"
@@ -141,7 +188,8 @@ KURALLAR: list[Kural] = [
             r"|select\s+\*\s+from\b"
             r"|(list|dump|export)\s+all\s+(customer|user|employee|patient)s?"
         ),
-        puan=0.65,
+        # KVKK açısından en kritik başlık: tek eşleşmede engellenir.
+        puan=0.80,
         aciklama="Toplu kişisel veri talebi (KVKK riski)",
     ),
     Kural(
@@ -269,19 +317,28 @@ class KuralTabanliFiltre(GirisFiltresi):
             )
 
         normalize_metin = normalize(metin)
+        derin_metin = derin_normalize(metin)
         ihlaller: list[Ihlal] = []
 
         for kural in self.kurallar:
             eslesme = kural.regex.search(normalize_metin)
             if eslesme:
-                ihlaller.append(Ihlal(
-                    kural=kural.ad,
-                    kategori=kural.kategori,
-                    puan=kural.puan,
-                    aciklama=kural.aciklama,
-                    # indeksler katlama sonrası da aynı olduğu için orijinalden kesiyoruz
-                    kanit=self._kanit(metin, eslesme.start(), eslesme.end()),
-                ))
+                # indeksler katlama sonrası da aynı olduğu için orijinalden kesiyoruz
+                kanit = self._kanit(metin, eslesme.start(), eslesme.end())
+            else:
+                eslesme = kural.regex.search(derin_metin)
+                if not eslesme:
+                    continue
+                kanit = "[normalize] " + self._kanit(
+                    derin_metin, eslesme.start(), eslesme.end()
+                )
+            ihlaller.append(Ihlal(
+                kural=kural.ad,
+                kategori=kural.kategori,
+                puan=kural.puan,
+                aciklama=kural.aciklama,
+                kanit=kanit,
+            ))
 
         ihlaller.extend(self._sezgisel_kontroller(metin))
 

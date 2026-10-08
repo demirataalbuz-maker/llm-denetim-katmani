@@ -43,6 +43,11 @@ def _tamsayi(ad: str, varsayilan: int) -> int:
         return varsayilan
 
 
+def _liste(ad: str) -> tuple[str, ...]:
+    """Virgülle ayrılmış listeyi okur: "a, b" -> ("a", "b")."""
+    return tuple(p.strip() for p in _metin(ad, "").split(",") if p.strip())
+
+
 def _ondalik(ad: str, varsayilan: float) -> float:
     try:
         return float(_metin(ad, str(varsayilan)))
@@ -62,10 +67,15 @@ class Ayarlar:
     ollama_url: str
     ollama_model: str
     ollama_timeout: float
+    izinli_modeller: tuple[str, ...]   # istemcinin seçebileceği modeller
 
     # --- Sunucu ---
     host: str
     port: int
+
+    # --- Erişim denetimi (boşsa kapalı) ---
+    api_anahtari: str          # /chat ve /kurallar için X-API-Key / Bearer
+    panel_sifresi: str         # /panel için HTTP Basic parolası
 
     # --- Giriş denetimi ---
     giris_engel_esigi: float   # bu puanın üstü => istek engellenir
@@ -74,6 +84,8 @@ class Ayarlar:
     model_filtresi_acik: bool
     hf_model_adi: str
     hf_model_esigi: float
+    model_filtresi_kati: bool  # model çalışmazsa engelle (fail-closed)
+    istemci_sistem_mesaji: bool  # istemci `sistem` alanı gönderebilir mi
 
     # --- Çıkış denetimi ---
     cikis_tarama_acik: bool
@@ -102,14 +114,19 @@ def ayarlari_yukle() -> Ayarlar:
         ollama_url=_metin("OLLAMA_URL", "http://localhost:11434").rstrip("/"),
         ollama_model=_metin("OLLAMA_MODEL", "llama3.1"),
         ollama_timeout=_ondalik("OLLAMA_TIMEOUT", 120.0),
+        izinli_modeller=_liste("IZINLI_MODELLER"),
         host=_metin("DENETIM_HOST", "127.0.0.1"),
         port=_tamsayi("DENETIM_PORT", 8000),
+        api_anahtari=_metin("DENETIM_API_ANAHTARI", ""),
+        panel_sifresi=_metin("PANEL_SIFRESI", ""),
         giris_engel_esigi=_ondalik("GIRIS_ENGEL_ESIGI", 0.75),
         giris_uyari_esigi=_ondalik("GIRIS_UYARI_ESIGI", 0.40),
         engel_http_kodu=_tamsayi("ENGEL_HTTP_KODU", 403),
         model_filtresi_acik=_mantiksal("MODEL_FILTRESI_ACIK", False),
         hf_model_adi=_metin("HF_MODEL_ADI", "protectai/deberta-v3-base-prompt-injection-v2"),
         hf_model_esigi=_ondalik("HF_MODEL_ESIGI", 0.80),
+        model_filtresi_kati=_mantiksal("MODEL_FILTRESI_KATI", True),
+        istemci_sistem_mesaji=_mantiksal("ISTEMCI_SISTEM_MESAJI", True),
         cikis_tarama_acik=_mantiksal("CIKIS_TARAMA_ACIK", True),
         giris_maskeleme_acik=_mantiksal("GIRIS_MASKELEME_ACIK", False),
         dusuk_guven_kaliplari=_mantiksal("DUSUK_GUVEN_KALIPLARI", False),
